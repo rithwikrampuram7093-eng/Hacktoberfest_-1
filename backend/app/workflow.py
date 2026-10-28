@@ -8,6 +8,8 @@ from pathlib import Path
 
 from .config import Settings
 from .database import Store, now
+from .demo import DemoProvider, validate_demo_snapshot
+from .demo_runner import TrustedDemoRunner
 from .diagnostics import run_diagnostic
 from .evidence import collect_evidence, sanitize_text
 from .intake import import_directory
@@ -67,9 +69,10 @@ def compare_results(baseline: dict | None, after: dict) -> dict:
     duplicate_ids = len(after_tests) != len(after.get("tests", [])) or len(before_tests) != len((baseline or {}).get("tests", []))
     coverage_equal = bool(before_tests) and set(before_tests) == set(after_tests) and not duplicate_ids
     fixed = [identity for identity, outcome in before_tests.items() if outcome in {"failed", "errors"} and after_tests.get(identity) == "passed"]
+    same_runner = (baseline or {}).get("runner", "docker") == after.get("runner", "docker")
     verified = bool(baseline and baseline["status"] == "failed" and baseline.get("exit_code") not in {None, 0} and after["status"] == "passed"
-                    and after.get("exit_code") == 0 and coverage_equal and fixed and not regressions and all(value == "passed" for value in after_tests.values()))
-    return {"regressions": regressions, "missing_tests": missing, "fixed_tests": fixed, "coverage_equal": coverage_equal, "verified": verified}
+                    and after.get("exit_code") == 0 and coverage_equal and same_runner and fixed and not regressions and all(value == "passed" for value in after_tests.values()))
+    return {"regressions": regressions, "missing_tests": missing, "fixed_tests": fixed, "coverage_equal": coverage_equal, "same_runner": same_runner, "verified": verified}
 
 
 class Workflow:
@@ -87,6 +90,20 @@ class Workflow:
         self.store.update(identity, status=status, summary=message)
         self.store.emit(identity, status, message, data)
 
+    async def execution_runner(self, item: dict, verification: bool = False):
+        """Only explicitly selected, manifest-checked demos may use the host runner."""
+        if item.get("mode", "live") != "demo" or not item.get("scenario_id"):
+            return self.sandbox, "docker"
+        if verification:
+            if (item.get("baseline") or {}).get("runner") != "trusted_local_demo":
+                return self.sandbox, "docker"
+            return TrustedDemoRunner(enabled=self.settings.enable_trusted_demo_runner, scenario_id=item["scenario_id"], timeout=min(self.settings.test_timeout, 30)), "trusted_local_demo"
+        elif (await self.sandbox.health())["available"]:
+            return self.sandbox, "docker"
+        if self.settings.enable_trusted_demo_runner:
+            return TrustedDemoRunner(enabled=True, scenario_id=item["scenario_id"], timeout=min(self.settings.test_timeout, 30)), "trusted_local_demo"
+        return self.sandbox, "docker"
+
     async def investigate(self, identity: str, logs: str) -> None:
         async with self.capacity:
             try:
@@ -95,17 +112,34 @@ class Workflow:
                 source = self.settings.projects_dir / item["project_id"] / "source"
                 root = self.workspace(identity)
                 await asyncio.to_thread(import_directory, source, root, [self.settings.projects_dir])
+                demo_mode = item.get("mode", "live") == "demo"
+                if demo_mode:
+                    if not item.get("scenario_id"):
+                        raise ValueError("Demo Mode supports bundled scenarios only; choose a scenario")
+                    snapshot = await asyncio.to_thread(validate_demo_snapshot, root, item["scenario_id"])
+                    if snapshot["variant"] != "baseline":
+                        raise ValueError("Start Demo Mode from the original bundled scenario; reset to run again")
+                    selected_provider = DemoProvider(item["scenario_id"])
+                    self.store.emit(identity, "analysis_disclosure", "Demo Investigation — Preconfigured AI Analysis. Explanations are predefined; diagnostics and test results are actual observations")
+                else:
+                    selected_provider = self.provider
                 evidence = await asyncio.to_thread(collect_evidence, root, logs)
                 static_checks = [{"tool": "python_syntax", "path": entry["path"], "query": ""} for entry in evidence if entry["kind"] == "source" and entry["line"] == 1][:20]
                 diagnostics = [await asyncio.to_thread(run_diagnostic, root, check) for check in static_checks]
                 self.store.update(identity, evidence=correlate(evidence), diagnostics=diagnostics)
                 self.store.emit(identity, "evidence", f"Collected {len(evidence)} evidence records and ran {len(diagnostics)} passive syntax checks")
 
-                self.stage(identity, "baseline", "Running the original test suite in the restricted Docker sandbox")
-                baseline = await self.sandbox.run(root)
+                runner, runner_type = await self.execution_runner(item)
+                self.store.update(identity, runner_type=runner_type)
+                runner_label = "the opt-in trusted local demo runner" if runner_type == "trusted_local_demo" else "the restricted Docker sandbox"
+                self.stage(identity, "baseline", f"Reproducing the original failure with {runner_label}")
+                baseline = await runner.run(root)
+                baseline["runner"] = runner_type
                 baseline["stdout"] = sanitize_text(baseline["stdout"])
                 baseline["stderr"] = sanitize_text(baseline["stderr"])
                 self.store.update(identity, baseline=baseline)
+                if baseline["status"] == "unavailable":
+                    self.store.update(identity, runner_type="unavailable")
                 self.store.emit(identity, "baseline_result", f"Baseline: {baseline['status']} · {baseline['passed']} passed, {baseline['failed']} failed, {baseline['errors']} errors", {"status": baseline["status"]})
                 if baseline["stdout"] or baseline["stderr"]:
                     for record in await asyncio.to_thread(collect_evidence, root, baseline["stdout"] + "\n" + baseline["stderr"]):
@@ -122,14 +156,14 @@ class Workflow:
                     self.stage(identity, "insufficient_evidence", "No supported evidence was found in the imported project")
                     return
 
-                self.stage(identity, "analyzing", "Requesting evidence-backed root-cause hypotheses from the configured local model")
+                self.stage(identity, "analyzing", "Loading preconfigured demo hypotheses linked to the collected evidence" if demo_mode else "Requesting evidence-backed root-cause hypotheses from the configured local model")
                 context = {"evidence": evidence, "baseline": baseline, "diagnostics": diagnostics}
-                analysis = await self.provider.generate(
+                analysis = await selected_provider.generate(
                     "Generate multiple competing hypotheses when evidence permits. Every hypothesis needs real supporting evidence IDs. Describe uncertainty and contradictions. Use only passive diagnostic tools: literal search, python_syntax, or config_keys. Diagnostic checks must reference project-relative files. Do not treat unavailable tests as observed failures.", context, Analysis)
                 hypotheses = rank_hypotheses(analysis, evidence)
                 self.store.update(identity, hypotheses=hypotheses, summary=sanitize_text(analysis.summary))
 
-                self.stage(identity, "diagnosing", "Checking model hypotheses with allowlisted passive source and configuration diagnostics")
+                self.stage(identity, "diagnosing", "Checking hypotheses with allowlisted passive source and configuration diagnostics")
                 requested = []
                 for hypothesis in hypotheses:
                     for check in hypothesis["diagnostic_checks"]:
@@ -143,18 +177,18 @@ class Workflow:
                     self.store.emit(identity, "diagnostic", text[:800], observation)
                 evidence = correlate(list({entry["id"]: entry for entry in evidence}.values()))
                 if requested:
-                    analysis = await self.provider.generate("Reassess hypotheses using the actual diagnostic observations. Rank plausible causes and explicitly mention contradiction or insufficient evidence. Do not claim verification. Cite only evidence IDs from this context.", {"evidence": evidence, "baseline": baseline, "diagnostics": diagnostics, "previous_hypotheses": hypotheses}, Analysis)
+                    analysis = await selected_provider.generate("Reassess hypotheses using the actual diagnostic observations. Rank plausible causes and explicitly mention contradiction or insufficient evidence. Do not claim verification. Cite only evidence IDs from this context.", {"evidence": evidence, "baseline": baseline, "diagnostics": diagnostics, "previous_hypotheses": hypotheses}, Analysis)
                     hypotheses = rank_hypotheses(analysis, evidence)
                 self.store.update(identity, hypotheses=hypotheses, diagnostics=diagnostics, evidence=evidence)
 
-                self.stage(identity, "proposing", "Generating a minimal source/configuration patch for developer review")
-                proposal = await self.provider.generate(
+                self.stage(identity, "proposing", "Preparing the predefined demo repair as a real source diff for review" if demo_mode else "Generating a minimal source/configuration patch for developer review")
+                proposal = await selected_provider.generate(
                     "Propose minimal exact-text replacements fixing the best-supported causes. Each old text MUST match exactly one source location. Only edit existing application Python or safe config files. Do not edit tests, dependency files, pytest configuration, hidden files or secrets. Preserve behavior outside the failing cases. hypothesis_ids must reference supplied hypotheses. No repair is verified yet.",
                     {"evidence": evidence, "hypotheses": hypotheses, "diagnostics": diagnostics, "baseline": baseline}, PatchProposal)
                 if not set(proposal.hypothesis_ids).issubset({entry["id"] for entry in hypotheses}):
                     raise ProviderError("Patch references an unknown hypothesis")
                 patch = await asyncio.to_thread(prepare_patch, root, [edit.model_dump() for edit in proposal.edits], sorted({entry["path"] for entry in evidence if entry["kind"] in {"source", "configuration"}}))
-                patch.update(status="proposed", explanation=sanitize_text(proposal.explanation), hypothesis_ids=proposal.hypothesis_ids)
+                patch.update(status="proposed", explanation=sanitize_text(proposal.explanation), hypothesis_ids=proposal.hypothesis_ids, origin="preconfigured_demo" if demo_mode else "live_ai")
                 self.store.update(identity, patch=patch)
                 self.stage(identity, "awaiting_approval", "Patch ready for review. No source changes have been applied")
             except asyncio.CancelledError:
@@ -191,13 +225,16 @@ class Workflow:
                 await asyncio.to_thread(import_directory, self.workspace(identity), candidate, [self.settings.investigations_dir])
                 await asyncio.to_thread(apply_patch, candidate, item["patch"])
                 self.store.update(identity, patch={**item["patch"], "status": "applied"})
-                self.stage(identity, "verifying", "Approved patch applied in isolation. Running the same test suite in Docker")
-                result = await self.sandbox.run(candidate)
+                runner, runner_type = await self.execution_runner(item, verification=True)
+                runner_label = "the opt-in trusted local demo runner" if runner_type == "trusted_local_demo" else "Docker"
+                self.stage(identity, "verifying", f"Approved patch applied to a separate workspace. Running the same test suite with {runner_label}")
+                result = await runner.run(candidate)
+                result["runner"] = runner_type
                 result["stdout"] = sanitize_text(result["stdout"])
                 result["stderr"] = sanitize_text(result["stderr"])
                 comparison = compare_results(item["baseline"], result)
                 result.update(comparison)
-                self.store.update(identity, verification=result)
+                self.store.update(identity, verification=result, runner_type=runner_type if result["status"] != "unavailable" else "unavailable")
                 if comparison["verified"]:
                     self.stage(identity, "verified", f"Fix verified against the supplied test suite: {len(comparison['fixed_tests'])} previously failing tests now pass; no observed regressions")
                 elif comparison["regressions"]:

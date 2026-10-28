@@ -1,39 +1,55 @@
-# Development environment inspection
+# Development environment
 
 Recorded on **28 October 2026**, using the user's India time context. This is an
-inspection record, not a live health report. Recheck `/api/health` for the current
-runtime state.
+inspection and execution record; use `/api/health` for current runtime readiness.
 
 | Component | Observed state |
 | --- | --- |
 | Workspace | `C:\Users\Admin\Downloads\HCK` |
 | Python | Existing Python 3.12 at `C:\Users\Admin\AppData\Local\Programs\Python\Python312\python.exe`, outside the session's `PATH` |
-| Backend environment | Repository `.venv` created using that installation; backend dependencies installed successfully |
-| Ollama executable | Existing `C:\Users\Admin\AppData\Local\Programs\Ollama\ollama.exe`, outside the session's `PATH` |
-| Ollama HTTP API | `http://127.0.0.1:11434/api/tags` reachable; returned `models: []` |
-| Local Gemma runtime | No model was available in the inspected Ollama inventory |
-| Docker | Docker CLI/runtime absent in the inspected environment |
-| Sample execution | Not run on the host; no Docker baseline or repaired sample run verified |
+| Backend | Repository `.venv` created from the existing installation; dependencies installed |
+| Ollama executable | Existing `C:\Users\Admin\AppData\Local\Programs\Ollama\ollama.exe`, outside `PATH` |
+| Ollama API | `http://127.0.0.1:11434/api/tags` reachable with `models: []` |
+| Local Gemma | No installed model in the inspected inventory |
+| Docker | CLI/runtime unavailable in the inspected environment |
+| Trusted local demos | API: 4 passed/1 failed; SQLite: 2 passed/3 failed; logic: 4 passed/1 failed. Each approved candidate passed all five tests |
+| API demo flows | All three exercised through the running backend/frontend proxy: failure, approval, verification, SSE/report, reset, and rejection; original verified history persisted |
+| Live AI with Docker | Not verified because Docker and an installed local model were unavailable |
+| Browser visual QA | Separate-tab navigation stopped at the Windows URL-policy check; visual click-through remains unverified |
 
-Existing Python and Ollama installations were reused. Neither tool was
-reinstalled, and no model download was started. A model made available only
-inside Claude Code or another assistant is not evidence of a local Ollama model.
+Existing Python and Ollama installations were reused. Neither runtime was
+reinstalled, and no model was downloaded. A model exposed through another coding
+assistant does not establish a usable local Ollama model.
 
-The setup script first reuses the repository virtual environment. If a new one
-is needed, it checks `python.exe`/`py.exe`, then common per-user Python directories
-under `%LOCALAPPDATA%\Programs\Python`. `-PythonPath` selects an existing
-installation explicitly. The script does not install a Python runtime.
+The user explicitly authorized the optional trusted local demo runner. It is
+disabled by default and can execute only the complete, literal-hash-pinned
+bundled scenarios or exact deterministic approved candidates. Tests and logs are
+real; hypotheses and repairs in Demo Mode are explicitly predefined. This path
+uses the host interpreter and does not provide Docker isolation. Arbitrary
+imports and Live AI patches remain Docker-only.
 
-To enable the real end-to-end demonstration, the operator still needs Docker
-Desktop with a reachable Linux-container daemon, the built
-`rootcause-runner:local` image, and a downloaded local model. A suggested model
-tag is [`gemma3:4b` from Ollama](https://ollama.com/library/gemma3%3A4b):
+For the prepared workspace, start the backend with the opt-in flag and start the
+frontend in a second terminal:
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" pull gemma3:4b
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-backend.ps1 -EnableTrustedDemoRunner
 ```
 
-Set `RC_OLLAMA_MODEL=gemma3:4b` in `.env` after download, or leave the variable
-empty for installed Gemma auto-detection. This command is documentation for the
-operator; it was not executed during development. See [the README](../README.md)
-for runner-image build and service startup commands.
+```powershell
+npm.cmd --prefix frontend run dev
+```
+
+For a clean clone, run `scripts/setup.ps1` first without `-BuildRunner`. It reuses
+an existing `.venv`, otherwise locates Python on `PATH` or under
+`%LOCALAPPDATA%\Programs\Python`; `-PythonPath` selects an existing interpreter.
+It installs dependencies but does not install a Python runtime. Docker is needed
+only when building/using the Docker execution path.
+
+Live AI requires an installed non-cloud model visible in Ollama's own inventory,
+a reachable Linux-container Docker daemon, and a built `rootcause-runner:local`
+image. Set `RC_OLLAMA_MODEL` to the exact installed name, or leave it empty for
+local Gemma detection. The application never silently replaces failed live
+inference with Demo Mode.
+
+See [README setup commands](../README.md), [the repeatable demo](demo.md), and
+[executed checks and limitations](verification.md).

@@ -13,12 +13,14 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from .config import ROOT, Settings
 from .database import Store
+from .demo import DEMO_SCENARIOS, scenario_path, validate_demo_snapshot
+from .demo_runner import TrustedDemoRunner
 from .intake import MAX_TOTAL_BYTES, import_archive, import_directory
 from .middleware import RequestBodyLimit
 from .providers import AIProvider, OllamaProvider
 from .report import render_report
 from .sandbox import DockerSandbox
-from .schemas import DirectoryRequest, InvestigationRequest
+from .schemas import DemoRequest, DirectoryRequest, InvestigationRequest
 from .workflow import TERMINAL, Workflow
 
 
@@ -84,13 +86,16 @@ def create_app(settings: Settings | None = None, provider: AIProvider | None = N
     async def health():
         ai, runner = await asyncio.gather(provider.health(), sandbox.health())
         runner = {**runner, "error": runner.get("reason") or runner.get("error")}
-        return {"status": "ready" if ai["available"] and runner["available"] else "degraded", "ai": ai, "sandbox": runner}
+        local = await TrustedDemoRunner(settings.enable_trusted_demo_runner, "api-config").health()
+        return {"status": "ready" if ai["available"] and runner["available"] else "degraded", "ai": ai, "sandbox": runner,
+                "demo": {"available": True, "scenarios": len(DEMO_SCENARIOS), "local_runner_enabled": settings.enable_trusted_demo_runner,
+                         "execution_available": runner["available"] or local["available"], "local_runner": local}}
 
     @app.get("/api/projects")
     async def projects():
         return store.projects()
 
-    async def import_project(source: Path | bytes, name: str = "project.zip", demo: bool = False) -> dict:
+    async def import_project(source: Path | bytes, name: str = "project.zip", demo: bool = False, scenario_id: str | None = None) -> dict:
         identity = uuid4().hex
         destination = settings.projects_dir / identity / "source"
         try:
@@ -99,7 +104,11 @@ def create_app(settings: Settings | None = None, provider: AIProvider | None = N
             else:
                 roots = [ROOT / "samples"] if demo else settings.import_roots
                 metadata = await asyncio.to_thread(import_directory, source, destination, roots)
-            return store.add_project(identity, metadata["name"], metadata["file_count"])
+            if scenario_id:
+                snapshot = await asyncio.to_thread(validate_demo_snapshot, destination, scenario_id)
+                if snapshot["variant"] != "baseline":
+                    raise ValueError("Bundled scenario must match its original baseline")
+            return store.add_project(identity, metadata["name"], metadata["file_count"], scenario_id=scenario_id)
         except (ValueError, OSError) as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -117,31 +126,50 @@ def create_app(settings: Settings | None = None, provider: AIProvider | None = N
         finally:
             await file.close()
 
+    @app.get("/api/demo/scenarios")
+    async def scenarios():
+        return list(DEMO_SCENARIOS.values()) if isinstance(DEMO_SCENARIOS, dict) else DEMO_SCENARIOS
+
     @app.post("/api/demo", status_code=201)
-    async def demo():
-        return await import_project(ROOT / "samples" / "order-service", demo=True)
+    async def demo(body: DemoRequest = DemoRequest()):
+        return await import_project(scenario_path(body.scenario_id), demo=True, scenario_id=body.scenario_id)
 
     @app.get("/api/investigations")
     async def investigations():
         return store.list()
+
+    async def enqueue(project: dict, mode: str, logs: str = "") -> dict:
+        active = sum(not task.done() for task in tasks)
+        if active >= 8:
+            raise HTTPException(429, "Investigation queue is full; wait for active work to finish")
+        identity = uuid4().hex
+        store.create(identity, project, mode=mode)
+        store.emit(identity, "queued", "Demo investigation queued" if mode == "demo" else "Live AI investigation queued")
+        launch(workflow.investigate(identity, logs))
+        return store.get(identity)
 
     @app.post("/api/investigations", status_code=202)
     async def start(body: InvestigationRequest):
         project = store.project(body.project_id)
         if not project:
             raise HTTPException(404, "Project not found")
-        active = sum(not task.done() for task in tasks)
-        if active >= 8:
-            raise HTTPException(429, "Investigation queue is full; wait for active work to finish")
-        identity = uuid4().hex
-        store.create(identity, project)
-        store.emit(identity, "queued", "Investigation queued")
-        launch(workflow.investigate(identity, body.logs))
-        return store.get(identity)
+        if body.mode == "demo" and not project.get("scenario_id"):
+            raise HTTPException(400, "Demo Mode only supports bundled scenarios. Select one of the three demo scenarios")
+        return await enqueue(project, body.mode, body.logs)
 
     @app.get("/api/investigations/{identity}")
     async def investigation(identity: str):
         return get_item(identity)
+
+    @app.post("/api/investigations/{identity}/reset", status_code=202)
+    async def reset_demo(identity: str):
+        item = get_item(identity)
+        if item.get("mode") != "demo" or not item.get("scenario_id"):
+            raise HTTPException(409, "Reset Demo is available only for a bundled Demo Mode investigation")
+        if item["status"] not in TERMINAL:
+            raise HTTPException(409, "Wait for this investigation to finish its current operation before resetting")
+        project = await import_project(scenario_path(item["scenario_id"]), demo=True, scenario_id=item["scenario_id"])
+        return await enqueue(project, "demo")
 
     @app.post("/api/investigations/{identity}/approve", status_code=202)
     async def approve(identity: str):

@@ -1,0 +1,4 @@
+{
+  "api_base_url": "https://inventory.example.test/v1",
+  "currency": "USD"
+}

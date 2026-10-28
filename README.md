@@ -1,202 +1,189 @@
 # RootCause AI
 
-An evidence-driven Python failure investigation and repair workbench. Import a
-project, execute its tests in Docker, inspect source-linked AI hypotheses, review
-a proposed patch, and explicitly approve a repair before running verification.
-The application records actual test output and distinguishes a verified repair
-from an unverified proposal or an unsuccessful fix.
+A local Python failure investigation and repair workbench with evidence, reviewable
+patches, explicit approval, real test execution, and persistent history.
 
-The React dashboard connects to a local FastAPI service. SQLite stores projects,
-investigations, evidence, events, proposed changes, and test results. Ollama is the
-AI runtime; Codex and Claude Code are development tools and are not needed to run
-the application. There is no cloud-model fallback or canned successful diagnosis.
+**Demo Mode** runs three bundled failure scenarios with clearly labeled,
+preconfigured analysis. **Live AI** investigates projects using a local Ollama
+model and Docker. The modes are selected explicitly; a missing model never
+silently becomes a predefined diagnosis.
 
-On the inspected Windows machine (28 October 2026), Python 3.12 and Ollama were
-already installed outside `PATH`; the local Ollama endpoint was reachable but
-had no installed models, and Docker was absent. The Python virtual environment
-and backend dependencies have been created. The full Docker/Gemma demonstration
-has **not** been verified. See [the environment record](docs/environment.md).
+## Run the model-free demo on Windows
 
-## Windows setup
-
-Prerequisites:
-
-- Python 3.11 or newer. The setup script reuses `.venv`, then checks `PATH` and
-  common per-user Python installation directories; no Python reinstallation is
-  needed for this machine.
-- Node.js 20.19+ or 22.12+ and `npm.cmd`.
-- Docker Desktop running **Linux containers**. Its daemon must be reachable by
-  your current Windows account.
-- Ollama with a locally installed Gemma model for AI investigations. An Ollama
-  installation or a model configured only in another coding assistant does not
-  establish that the local Ollama HTTP API is available.
-
-Open PowerShell in the repository root:
+The development workspace already has its Python environment and dependencies.
+For a clean clone, install Python 3.11+ and Node.js with `npm.cmd`, then prepare
+dependencies once, without building a Docker image:
 
 ```powershell
-.\scripts\setup.ps1 -BuildRunner
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 ```
 
-This creates `.venv`, installs the backend and frontend dependencies, creates
-`.env` if absent, and builds `rootcause-runner:local`. Package installation and the
-initial Docker image build require internet access. Subsequent project test runs
-have networking disabled and install no dependencies.
-
-To prepare the UI/API while Docker is unavailable, run `setup.ps1` without
-`-BuildRunner`. The app can display intake, history, evidence, and honest degraded
-health; it cannot verify imported tests without Docker. To choose an existing
-Python installation explicitly:
+Open two PowerShell terminals in the repository root:
 
 ```powershell
-.\scripts\setup.ps1 -PythonPath "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe"
+# Terminal 1: explicitly allow local execution of the three trusted demos.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-backend.ps1 -EnableTrustedDemoRunner
 ```
 
-If PowerShell blocks scripts under your execution policy, use the direct commands
-below or invoke a script with a process-scoped policy:
+```powershell
+# Terminal 2
+npm.cmd --prefix frontend run dev
+```
+
+Open <http://127.0.0.1:5173>. Select **Demo Mode**, choose a scenario, and select
+**Start demo**. Inspect the reproduced failure, collected evidence, predefined
+hypotheses, and proposed diff. Approve the displayed patch to run verification
+in a separate candidate copy. **Reset Demo** starts a fresh failing investigation
+and keeps the previous run in history.
+
+| Scenario | Reproduced failure | Observed baseline → candidate |
+| --- | --- | --- |
+| `api-config` | Configuration lookup uses the wrong API URL key | 4 passed, 1 failed → 5 passed |
+| `database-query` | SQLite query selects a nonexistent column | 2 passed, 3 failed → 5 passed |
+| `logical-total` | Order total omits item quantities | 4 passed, 1 failed → 5 passed |
+
+Demo conclusions and repairs are predefined teaching material, labeled
+**Demo Investigation — Preconfigured AI Analysis**. Source collection, diagnostics,
+logs, exit codes, and before/after tests come from actual execution. A successful
+test result is never substituted for an unavailable or failed run. All three
+scenario flows have been exercised through the API with real failing baselines,
+approval, five passing candidate tests each, and a fresh failure after reset.
+See [the verification record](docs/verification.md) for current results and limits.
+
+The opt-in runner executes only complete, hash-pinned shipped baselines or their
+exact deterministic repair candidates. It validates every file and directory,
+rejects changed tests, extra files, links, and arbitrary patches, then executes
+trusted definition bytes in a fresh temporary directory. It uses the **host
+Python interpreter**, not Docker isolation. Its child receives a minimal
+environment; Windows process jobs enforce process/memory limits and terminate
+descendants on timeout. Imported projects and Live AI patches always require
+Docker. The local exception is disabled by default.
+
+For a short presentation script, see [the 90-second demo procedure](docs/demo.md).
+
+## Set up Live AI and Docker
+
+Live AI needs Docker Desktop running Linux containers, a locally built runner
+image, and an installed Ollama model. Codex and Claude Code are development tools;
+neither is an application runtime dependency.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1 -BuildRunner
 ```
 
-The equivalent direct setup commands are:
+The setup script reuses `.venv`, or checks existing Python installations on
+`PATH` and under `%LOCALAPPDATA%\Programs\Python`. It installs the backend and
+frontend dependencies, creates `.env` only if absent, and builds the runner when
+`-BuildRunner` is supplied. Dependency installation and image building need
+internet access. Docker test runs install no project dependencies and disable networking.
+An existing Python installation can be selected explicitly:
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
-npm.cmd --prefix frontend install
-Copy-Item .env.example .env
-docker build -t rootcause-runner:local -f backend/runner/Dockerfile backend/runner
+.\scripts\setup.ps1 -PythonPath "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe" -BuildRunner
 ```
 
-The direct `Copy-Item` command is for the first setup only; preserve your existing
-`.env` when upgrading. Virtual-environment activation is unnecessary.
-
-Inspect the local model connection:
+Inspect the actual local Ollama connection:
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" list
 Invoke-RestMethod http://127.0.0.1:11434/api/tags
 ```
 
-If Ollama is installed but stopped, run
-`& "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" serve` in a separate terminal.
-For a suggested local model, [Ollama publishes the `gemma3:4b` tag](https://ollama.com/library/gemma3%3A4b).
-Download it yourself when ready, then set `RC_OLLAMA_MODEL=gemma3:4b` in `.env`:
+If Ollama is stopped, launch `ollama serve` using its installed executable.
+Select an installed non-cloud model with `RC_OLLAMA_MODEL` in `.env`; an empty
+value auto-detects a locally installed Gemma model. A model configured only in
+another coding assistant is not evidence that Ollama can serve it. No model was
+downloaded during development.
+
+Start the backend without the demo opt-in flag and run the frontend in another
+terminal. The API is at <http://127.0.0.1:8000>, with interactive documentation at
+<http://127.0.0.1:8000/docs>:
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" pull gemma3:4b
-```
-
-No model download was performed during development. Hardware needs and quality
-vary by model size. Leaving `RC_OLLAMA_MODEL` empty enables detection of an
-installed non-cloud Gemma model. If Ollama is on `PATH`, `ollama` can replace the
-full executable path in these commands.
-
-Start these services in **separate terminals**, each opened in this repository:
-
-```powershell
-# Terminal 1
 .\scripts\start-backend.ps1
 ```
 
 ```powershell
-# Terminal 2
-.\scripts\start-frontend.ps1
+npm.cmd --prefix frontend run dev
 ```
 
-Open <http://127.0.0.1:5173>. The backend listens on
-<http://127.0.0.1:8000>; its interactive API reference is at
-<http://127.0.0.1:8000/docs>. The frontend development server proxies `/api`
-requests to the backend. Both services bind to the loopback interface.
-
-Direct startup also loads the repository-root `.env`; process environment
+Direct backend startup also loads the repository-root `.env`; process environment
 variables take precedence:
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-```powershell
-npm.cmd --prefix frontend run dev -- --host 127.0.0.1 --port 5173
-```
+Select **Live AI**, import a project, and supply relevant error text. The backend
+collects evidence, runs a Docker baseline, requests evidence-cited hypotheses
+and minimal edits from Ollama, and waits for explicit patch approval. Missing
+Docker or model requirements remain visible. A blocked Live AI run stays in
+history; selecting a demo creates a separate investigation.
 
-## Try the live demonstration
-
-1. Check the dashboard's Docker and Ollama readiness indicators.
-2. Load the bundled Order Service demo. This copies `samples/order-service`
-   into a managed workspace.
-3. Start an investigation. Its baseline Docker test run triggers the real
-   failures and captures evidence.
-4. Follow the event stream, source-linked hypotheses, diagnostics, and patch.
-5. Read the diff. Approve to apply the reviewed changes to a separate candidate and
-   execute post-patch tests, or reject the proposal.
-6. Read the before/after test output and report. A failed run, timeout, missing
-   Docker daemon, or model error must remain visible as an incomplete outcome.
-
-The sample has independent API/configuration, SQLite/data-processing, and order
-calculation failures. It contains executable behavior tests, no prewritten
-repair patch, and no fabricated log file. See [the repeatable demo procedure](docs/demo.md).
-
-Every investigation starts from the imported project's unchanged source.
-Approved candidates are retained separately under that investigation's data
-directory; repairs are not promoted to the original project or accumulated
-automatically across investigations.
+On the inspected Windows machine, Python 3.12 and Ollama were already installed
+outside `PATH`; Ollama returned an empty model inventory, and Docker was absent.
+The real model-generated Docker repair flow remains unverified. The model-free
+demo has been executed locally with the explicit trusted-runner exception.
+See [environment details](docs/environment.md).
 
 ## Import your own Python project
 
-Use a local directory under `RC_IMPORT_ROOTS`, or upload a ZIP archive. The import
-copies supported UTF-8 source/configuration/log files into the managed store and
-does not run project code. Local-directory imports default to `./samples`; add
-only directories that you intend the backend to read. Use absolute paths when
-the projects live outside this repository. Existing `.env` files, common secret
-files, databases, generated directories, links, and hidden files are excluded or
-rejected. ZIP paths and expanded file sizes are validated.
+Directory imports must stay inside `RC_IMPORT_ROOTS`; ZIP uploads are validated
+before copying supported UTF-8 source, configuration, and log files. Intake does
+not execute project code. Hidden files, common secret files, databases, generated
+directories, symbolic links, junctions, traversal paths, and oversized inputs are
+excluded or rejected. Only allow directory roots you intend the backend to read.
 
-Supply relevant error text with the investigation when available. A baseline
-pytest execution also produces real failure evidence. The runner includes Python
-and pytest, and supports projects whose test dependencies are already available
-in that image. It never installs a project's `requirements.txt` during execution.
-For additional dependencies, review them and build a separate runner image in
-advance, then select it using `RC_DOCKER_IMAGE`.
+Imported code executes exclusively in the restricted Docker runner. The image
+contains Python and pytest; it never installs `requirements.txt` at test time.
+Review additional dependencies and build a separate image in advance when needed,
+then select it with `RC_DOCKER_IMAGE`. `samples/order-service` remains an additional
+failing project for the Docker/Live AI path.
+
+Each investigation preserves its source baseline. Approval applies reviewed edits
+to a separate candidate. Candidates are never automatically promoted to imported
+projects, and a new investigation starts from unchanged imported source.
 
 ## Configuration
 
-The backend loads `.env` from the repository root using `python-dotenv`. Existing
-process environment variables take precedence, including with direct `uvicorn`
-startup. Paths are resolved from the backend's working directory;
-the scripts consistently use the repository root.
+The backend loads `.env` from the repository root. The startup scripts use that
+directory consistently; process environment variables take precedence.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `RC_OLLAMA_URL` | `http://127.0.0.1:11434` | Loopback HTTP Ollama API; remote/HTTPS URLs are rejected |
-| `RC_OLLAMA_MODEL` | Empty | Exact installed model name, or Gemma auto-detection |
-| `RC_DATA_DIR` | `./data` | SQLite database and isolated project workspaces |
-| `RC_IMPORT_ROOTS` | `./samples` | Comma-separated allowlist for directory intake |
-| `RC_DOCKER_IMAGE` | `rootcause-runner:local` | Prebuilt image for test execution |
-| `RC_TEST_TIMEOUT` | `120` | Per-test-run timeout; 1–600 seconds |
-| `RC_AI_TIMEOUT` | `180` | Per-AI-request timeout; 1–900 seconds |
+| `RC_OLLAMA_URL` | `http://127.0.0.1:11434` | Loopback HTTP Ollama endpoint; remote endpoints and credentials are rejected |
+| `RC_OLLAMA_MODEL` | Empty | Exact installed non-cloud model name, or local Gemma detection |
+| `RC_DATA_DIR` | `./data` | SQLite database and managed workspaces |
+| `RC_IMPORT_ROOTS` | `./samples` | Comma-separated directory intake allowlist |
+| `RC_DOCKER_IMAGE` | `rootcause-runner:local` | Prebuilt project-test image |
+| `RC_TEST_TIMEOUT` | `120` | Docker run timeout, 1–600 seconds; trusted demos use at most 30 seconds |
+| `RC_AI_TIMEOUT` | `180` | Per-request AI timeout, 1–900 seconds |
+| `RC_ENABLE_TRUSTED_DEMO_RUNNER` | `false` | Explicit local execution permission for exact bundled demos only |
 
-Keep the backend local. It can read imported source and control Docker, and this
-prototype has no account-based authorization or multi-user security layer. Do not
-publish its port or expose it through a public tunnel.
+Docker is preferred for demo execution when available. Otherwise the trusted
+runner is eligible only when enabled, in Demo Mode, for a manifest-verified
+scenario. Verification uses the same runner as the baseline. Health can remain
+`degraded` for Live AI while `demo.execution_available` is true.
 
-## Checks
+SQLite upgrades add the mode/scenario metadata columns without deleting existing
+history. Older records remain Live AI records. Active work is marked
+`interrupted` after a restart; pending approval proposals remain reviewable.
 
-Run only the trusted backend test directory on the host:
+## Checks and execution boundaries
+
+Run the trusted backend tests and frontend build:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest backend\tests -q
 npm.cmd --prefix frontend run build
 ```
 
-Run imported-project tests only through the Docker runner. See
-[the sample README](samples/order-service/README.md) for a manual isolated command.
-The root `pytest.ini` limits default collection to the trusted backend tests;
-do not explicitly collect `samples/` or any imported-project directory on the host.
+The trusted backend suite includes explicit tests of the hash-pinned local demo
+exception. Do not directly collect `samples/` or an imported project's tests on
+the host. Root pytest configuration limits default collection to backend tests.
+Run imported-project tests through Docker.
 
-Real runtime integration is opt-in and requires Docker, the runner image, and a
-local Gemma model. It checks actual baseline failures and a model-generated patch
-proposal, while leaving approval to the developer:
+The optional real-model/Docker integration test requires both runtimes:
 
 ```powershell
 $env:RC_RUN_LIVE='1'
@@ -204,52 +191,48 @@ $env:RC_RUN_LIVE='1'
 Remove-Item Env:RC_RUN_LIVE
 ```
 
-For a complete API-driven demo with a displayed diff and an interactive approval
-prompt, start the backend and run:
+For a terminal review flow with an explicit approval prompt, start the backend
+with the demo flag and run:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\review-demo.py
+.\.venv\Scripts\python.exe scripts\review-demo.py --mode demo --scenario api-config
 ```
 
-To serve the built frontend locally, use `npm.cmd --prefix frontend run preview`
-and open <http://127.0.0.1:4173>. Both dev and preview servers proxy the local API.
-See [the verification record](docs/verification.md) for executed checks and limits.
+Choose `database-query` or `logical-total` for the other cases. `--mode live`
+requires Docker and the configured Ollama model.
 
-## Layout and boundaries
+`npm.cmd --prefix frontend run preview` serves the built UI on
+<http://127.0.0.1:4173> and proxies the local API. Browser visual verification and
+live runtime checks are reported separately in [verification.md](docs/verification.md).
+
+## Layout and limits
 
 ```text
-backend/
-  app/                 FastAPI, persistence, intake, evidence, AI and workflow
-  runner/              Minimal offline pytest image
-  tests/               Trusted backend and security tests
-frontend/
-  src/                 React dashboard and UI primitives
-samples/order-service/ Executable failing app and behavioral tests
-scripts/               Windows setup and service startup
-docs/                  Architecture and live demo procedure
-data/                  Runtime store (generated, not committed)
+backend/app/              FastAPI, persistence, providers, workflow and runners
+backend/runner/           Restricted Docker pytest image
+backend/tests/            Trusted application and security tests
+frontend/src/             React dashboard and UI primitives
+samples/demo-scenarios/   Three immutable bundled demonstration projects
+samples/order-service/    Additional failing project for Docker/Live AI
+scripts/                  Windows setup and service startup
+docs/                     API, architecture, demo and verification records
+data/                     Generated SQLite store and managed workspaces
 ```
 
-Imported Python is never imported or evaluated by the backend. Test execution
-uses a non-root Docker container with disabled network, a read-only project
-mount/root filesystem, bounded temporary storage, dropped capabilities, process
-limits, memory/CPU limits, and a timeout. The AI cannot supply shell commands.
-Patch validation protects tests and executable setup configuration, requires
-exact source matches and unchanged base hashes, and confines edits to existing
-application source/configuration in the managed copy. Each run copies a read-only
-snapshot into temporary container storage, so projects can create scratch files
-without writing back to the host project.
+Docker tests use a non-root user, disabled network, read-only project/root mounts,
+bounded temporary storage, dropped capabilities, resource limits, and a timeout.
+The model cannot issue shell commands. Patches require existing allowed paths,
+exact matches, valid candidate syntax, unchanged base hashes, and explicit
+approval. Tests, configured pytest test paths/patterns, dependency/setup files,
+hidden files, and secrets are protected. Windows CRLF and UTF-8 BOM content are
+preserved during supported edits.
 
-This is a local hackathon application, not a hardened hostile-code hosting
-service. Docker shares a kernel with its host VM; isolation is not a security
-proof. Text redaction covers common credential patterns, not every possible
-secret. Review the imported files before analysis. Remote/cloud Ollama endpoints
-are rejected. Verification requires a failing baseline followed by a fully
-passing suite with the same unique test IDs, at least one fixed failure, and no
-lost or regressed test. It does not prove that all possible bugs are fixed.
-Persistent records survive a restart, but active work is marked `interrupted`
-and is not resumed automatically; proposals awaiting approval remain reviewable.
-Use one backend instance.
+A verified repair requires a failing baseline, an entirely passing candidate,
+the same unique test IDs and runner, at least one fixed failure, and no missing
+or regressed tests. Project-provided assertions and reports are debugging
+evidence; they cannot attest correctness of hostile code or every possible input.
+Credential redaction is heuristic. Keep the service on loopback, use one backend
+instance, and protect the data directory. There is no account system or public
+hosting security layer.
 
-See [architecture and security decisions](docs/architecture.md) and
-[the API reference](docs/api.md) for details.
+See [architecture](docs/architecture.md) and [the API reference](docs/api.md).

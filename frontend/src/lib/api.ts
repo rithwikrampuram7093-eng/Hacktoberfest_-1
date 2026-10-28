@@ -3,6 +3,16 @@ export interface Project {
   name: string;
   file_count: number;
   created_at: string;
+  scenario_id?: string | null;
+}
+export type InvestigationMode = "demo" | "live";
+export type RunnerType = "docker" | "trusted_local_demo" | "unavailable";
+export interface DemoScenario {
+  id: string;
+  title: string;
+  category: string;
+  description: string;
+  expected_failure: string;
 }
 export interface RuntimeHealth {
   status: string;
@@ -13,6 +23,18 @@ export interface RuntimeHealth {
     error?: string | null;
   };
   sandbox: { available: boolean; error?: string | null; image?: string };
+  demo?: {
+    available: boolean;
+    scenarios: number;
+    local_runner_enabled: boolean;
+    execution_available?: boolean;
+    local_runner?: {
+      available: boolean;
+      runner: RunnerType;
+      isolation_note?: string;
+      error?: string | null;
+    };
+  };
 }
 export interface Evidence {
   id: string;
@@ -43,6 +65,12 @@ export interface TestResult {
   errors: number;
   skipped: number;
   tests: { nodeid: string; outcome: string }[];
+  runner?: RunnerType;
+  regressions?: string[];
+  missing_tests?: string[];
+  fixed_tests?: string[];
+  coverage_equal?: boolean;
+  verified?: boolean;
 }
 export interface InvestigationEvent {
   id: string | number;
@@ -58,6 +86,10 @@ export interface InvestigationSummary {
   status: string;
   created_at: string;
   summary?: string | null;
+  mode?: InvestigationMode;
+  scenario_id?: string | null;
+  analysis_label?: string;
+  runner_type?: RunnerType;
 }
 export interface PatchEdit {
   path: string;

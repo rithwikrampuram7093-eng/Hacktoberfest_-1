@@ -22,6 +22,7 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String)
     file_count: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[str] = mapped_column(String, default=now)
+    scenario_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Investigation(Base):
@@ -29,6 +30,10 @@ class Investigation(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(String, index=True)
     project_name: Mapped[str] = mapped_column(String)
+    mode: Mapped[str] = mapped_column(String, default="live")
+    scenario_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    analysis_label: Mapped[str] = mapped_column(String, default="Live AI Investigation")
+    runner_type: Mapped[str] = mapped_column(String, default="unavailable")
     status: Mapped[str] = mapped_column(String, default="queued")
     summary: Mapped[str] = mapped_column(Text, default="Investigation queued")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -67,6 +72,21 @@ class Store:
             connection.execute("PRAGMA foreign_keys=ON")
 
         Base.metadata.create_all(self.engine)
+        # Additive migration keeps previously recorded investigations reviewable.
+        with self.engine.begin() as connection:
+            additions = {
+                "projects": {"scenario_id": "TEXT"},
+                "investigations": {
+                    "mode": "TEXT NOT NULL DEFAULT 'live'", "scenario_id": "TEXT",
+                    "analysis_label": "TEXT NOT NULL DEFAULT 'Live AI Investigation'",
+                    "runner_type": "TEXT NOT NULL DEFAULT 'unavailable'",
+                },
+            }
+            for table, columns in additions.items():
+                existing = {row[1] for row in connection.exec_driver_sql(f"PRAGMA table_info({table})")}
+                for name, definition in columns.items():
+                    if name not in existing:
+                        connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
         self.session = sessionmaker(self.engine, expire_on_commit=False)
 
     def projects(self) -> list[dict]:
@@ -78,16 +98,17 @@ class Store:
             row = session.get(Project, identity)
             return record(row) if row else None
 
-    def add_project(self, identity: str, name: str, file_count: int) -> dict:
+    def add_project(self, identity: str, name: str, file_count: int, scenario_id: str | None = None) -> dict:
         with self.session.begin() as session:
-            row = Project(id=identity, name=name, file_count=file_count)
+            row = Project(id=identity, name=name, file_count=file_count, scenario_id=scenario_id)
             session.add(row)
             session.flush()
             return record(row)
 
-    def create(self, identity: str, project: dict) -> dict:
+    def create(self, identity: str, project: dict, mode: str = "live") -> dict:
         with self.session.begin() as session:
-            row = Investigation(id=identity, project_id=project["id"], project_name=project["name"])
+            row = Investigation(id=identity, project_id=project["id"], project_name=project["name"], mode=mode,
+                                scenario_id=project.get("scenario_id"), analysis_label="Demo Investigation — Preconfigured AI Analysis" if mode == "demo" else "Live AI Investigation")
             session.add(row)
             session.flush()
             return record(row)
@@ -95,7 +116,7 @@ class Store:
     def list(self) -> list[dict]:
         with self.session() as session:
             rows = session.scalars(select(Investigation).order_by(Investigation.created_at.desc()).limit(200))
-            return [{key: value for key, value in record(row).items() if key in {"id", "project_id", "project_name", "status", "summary", "created_at", "updated_at"}} for row in rows]
+            return [{key: value for key, value in record(row).items() if key in {"id", "project_id", "project_name", "status", "summary", "created_at", "updated_at", "mode", "scenario_id", "analysis_label", "runner_type"}} for row in rows]
 
     def get(self, identity: str, include_events: bool = True) -> dict | None:
         with self.session() as session:

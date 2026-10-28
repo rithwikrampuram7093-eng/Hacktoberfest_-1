@@ -1,53 +1,47 @@
-# Executed verification
+# Verification record
 
-Recorded on **28 October 2026**. These are observed development checks; they are
-not a claim that the real Docker/Gemma repair demonstration has passed.
+Recorded on **28 October 2026**. Demo conclusions are explicitly preconfigured; the test outcomes below were actually executed.
 
 | Check | Observed result |
 | --- | --- |
-| `.venv\\Scripts\\python.exe -m pytest -q` | **95 passed, 1 skipped**, 2 third-party deprecation warnings |
-| `npm.cmd --prefix frontend run build` | TypeScript checks and Vite production build passed |
-| Python dependency audit (`python -m pip_audit`) | No known vulnerabilities found after updating vulnerable initial pins, including transitive Starlette |
-| Frontend dependency audit (`npm.cmd audit`) | No known vulnerabilities reported |
-| FastAPI startup using patched dependencies | Successful on loopback port 8000 |
-| Frontend development HTTP | HTTP 200 on loopback port 5173 |
-| Built frontend preview HTTP | HTTP 200 on loopback port 4173 |
-| Preview API proxy and POST origin | Health request and sample import succeeded through port 4173 |
-| Persistent history | Actual blocked investigation remained after backend restart |
-| Live project intake | Bundled Order Service copied successfully, 5 supported files |
-| Live investigation with this machine's runtimes | Collected 6 evidence records; baseline unavailable; blocked with explicit missing Gemma model; zero hypotheses and no patch |
-| SSE and Markdown report | Both returned HTTP 200; terminal event and blocked outcome present |
-| Windows scripts | All PowerShell setup/start scripts passed syntax parsing |
-| Visual browser QA | Not completed: computer-use tooling stopped because it could not determine Chrome's current URL confidently enough to enforce policy |
-| Real model-generated, Docker-verified repair | **Not executed**: Docker unavailable and Ollama inventory empty |
+| Complete trusted backend suite | **132 passed, 1 skipped**, 2 upstream deprecation warnings |
+| TypeScript and Vite production build | Passed after the Demo/Live workflow and professional console updates |
+| Python and npm dependency audits | Previous audit reported zero known vulnerabilities; this update adds no dependencies |
+| Running FastAPI service | Started successfully on loopback port 8000 with trusted-demo opt-in |
+| Running frontend | HTTP 200 on port 5173; API proxy returned all three scenarios |
+| Real HTTP investigation workflows | All three scenarios reproduced failures, proposed actual diffs, applied approved fixes, and passed real pytest verification |
+| SSE and reports | Actual events, terminal completion, and labeled Markdown reports returned successfully |
+| Reset | Every scenario reproduced its original failure again in a fresh investigation; verified history remained available |
+| Imported projects | Refused Demo Mode/local execution; Live AI and imports remain Docker-only |
+| Trusted local runner boundary | Changed source/tests, extra files, disabled execution, and unknown scenarios rejected before execution |
+| Windows timeout cleanup | Real parent/child test process tree terminated by the runner job after timeout |
+| Legacy SQLite database | Additive migration preserved existing project records |
+| PowerShell scripts | Syntax validation passed |
+| Visual browser click-through | Not completed: Windows browser automation stopped at its URL-policy confidence check |
+| Live Ollama/Docker integration | Still unverified here: no installed local model and Docker unavailable |
 
-The skipped test is the explicit live-runtime integration test in
-`backend/tests/test_live.py`. Enable it only after the local model, Docker daemon
-and trusted runner image are ready:
+Actual black-box results through the running frontend API proxy:
 
-```powershell
-$env:RC_RUN_LIVE='1'
-.\.venv\Scripts\python.exe -m pytest backend\tests\test_live.py -q
-Remove-Item Env:RC_RUN_LIVE
-```
+| Scenario | Baseline | Approved candidate | Reset |
+| --- | --- | --- | --- |
+| API configuration | 4 passed, **1 failed**, exit 1 | **5 passed**, 0 failed/errors, exit 0 | Original failure reproduced |
+| SQLite database query | 2 passed, **3 failed**, exit 1 | **5 passed**, 0 failed/errors, exit 0 | Original failures reproduced |
+| Hidden logical bug | 4 passed, **1 failed**, exit 1 | **5 passed**, 0 failed/errors, exit 0 | Original failure reproduced |
 
-The 95 passing trusted tests exercise intake boundaries, secret redaction,
-allowlisted diagnostics, structured-provider validation, stale patch and rollback
-handling, custom pytest-file protection, Docker command restrictions, result
-validation, timeouts, approval/rejection, persistence, SSE, reports and
-regression/coverage rules. Unit tests use clearly scoped test doubles for model
-and sandbox responses; production code never uses those doubles.
+Each verified outcome used the same test identities and runner before and after, repaired at least one failing test, and reported no missing or regressed tests. All three ran with `trusted_local_demo`, not Docker. They executed exact, manifest-pinned bundled baseline/candidate bytes in fresh temporary directories. No imported project or arbitrary model-generated patch was executed on the host.
 
-No imported-project or sample code was executed on the host. The deliberately
-failing sample tests remain unexecuted until Docker is available. No fabricated
-sample traces, AI conclusions or test outcomes were added to the application.
+The live integration test remains opt-in (`RC_RUN_LIVE=1`) and was skipped. Demo API integration tests ran real pytest subprocesses while asserting that no live AI provider was called. Other unit tests use scoped test doubles where appropriate; production code does not use those doubles.
 
-For the full human-approved flow, start the backend and run:
+The frontend was redesigned with explicit modes, three scenario cards, a stage navigator, findings panel, readable evidence/diffs, approval controls, verification details, reports and reset. The production build passed, but no visual or click-through claim is made because browser automation stopped before opening the local dashboard.
+
+Start the model-free demo in two terminals:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\review-demo.py
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-backend.ps1 -EnableTrustedDemoRunner
 ```
 
-This client requires healthy actual runtimes, prints the returned patch, waits
-for `APPROVE`, and then displays real baseline and post-patch results. A failure
-or missing requirement produces a nonzero exit status.
+```powershell
+npm.cmd --prefix frontend run dev
+```
+
+Open <http://127.0.0.1:5173>. See [the 90-second demonstration](demo.md) and [README](../README.md) for clean-clone setup, Live AI requirements and security boundaries.

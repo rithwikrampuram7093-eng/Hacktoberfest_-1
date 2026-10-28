@@ -9,7 +9,6 @@ import {
   Beaker,
   BookOpen,
   Box,
-  Braces,
   Check,
   CheckCheck,
   CheckCircle2,
@@ -53,13 +52,16 @@ import { Button } from "./components/ui/button";
 import { Dialog } from "./components/ui/dialog";
 import {
   api,
+  type DemoScenario,
   type Evidence,
   type Hypothesis,
   type Investigation,
   type InvestigationEvent,
   type InvestigationSummary,
+  type InvestigationMode,
   type Project,
   type RuntimeHealth,
+  type RunnerType,
   type TestResult,
 } from "./lib/api";
 import { cn, formatStatus, relativeTime } from "./lib/utils";
@@ -97,6 +99,12 @@ const safeConfidence = (value: number) =>
   Math.round(
     Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0)) * 100,
   );
+const runnerName = (runner?: RunnerType) =>
+  runner === "docker"
+    ? "Docker runner"
+    : runner === "trusted_local_demo"
+      ? "Trusted local demo runner"
+      : "Runner unavailable";
 
 function StatusBadge({ status }: { status: string }) {
   return (
@@ -141,6 +149,10 @@ function Loading({ label = "Loading investigation" }: { label?: string }) {
 
 export default function App() {
   const [view, setView] = useState<View>("workspace");
+  const [mode, setMode] = useState<InvestigationMode>("demo");
+  const [scenarios, setScenarios] = useState<DemoScenario[]>([]);
+  const [scenarioError, setScenarioError] = useState("");
+  const [scenarioDialogOpen, setScenarioDialogOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [history, setHistory] = useState<InvestigationSummary[]>([]);
   const [health, setHealth] = useState<RuntimeHealth | null>(null);
@@ -195,6 +207,15 @@ export default function App() {
     if (result[1].status === "fulfilled") setHistory(result[1].value);
   }, []);
 
+  const refreshScenarios = useCallback(async () => {
+    try {
+      setScenarios(await api<DemoScenario[]>("/demo/scenarios"));
+      setScenarioError("");
+    } catch (error) {
+      setScenarioError((error as Error).message);
+    }
+  }, []);
+
   const refreshHealth = useCallback(async () => {
     try {
       const result = await api<RuntimeHealth>("/health");
@@ -214,7 +235,10 @@ export default function App() {
         const result = await api<Investigation>(
           `/investigations/${encodeURIComponent(id)}`,
         );
-        if (request === activeRequest.current) setInvestigation(result);
+        if (request === activeRequest.current) {
+          setInvestigation(result);
+          if (showLoading) setMode(result.mode || "live");
+        }
       } catch (error) {
         if (request === activeRequest.current && showLoading) {
           notify((error as Error).message, "error");
@@ -228,17 +252,20 @@ export default function App() {
   );
 
   useEffect(() => {
-    void Promise.all([refreshHealth(), refreshCollections()]).finally(() =>
-      setLoading(false),
-    );
+    void Promise.all([
+      refreshHealth(),
+      refreshCollections(),
+      refreshScenarios(),
+    ]).finally(() => setLoading(false));
     const timer = setInterval(() => {
       void refreshHealth();
       void refreshCollections();
     }, 20000);
     return () => clearInterval(timer);
-  }, [refreshHealth, refreshCollections]);
+  }, [refreshHealth, refreshCollections, refreshScenarios]);
 
   useEffect(() => {
+    activeRequest.current += 1;
     if (!activeId) {
       setInvestigation(null);
       return;
@@ -326,31 +353,88 @@ export default function App() {
     setView(next);
     setMobileNav(false);
   };
-  const selectInvestigation = (id: string) => {
+  const selectInvestigation = (id: string, nextMode?: InvestigationMode) => {
+    if (nextMode) setMode(nextMode);
     setActiveId(id);
     setView("workspace");
     setSelectedTab("evidence");
     setMobileNav(false);
   };
-  const openIntake = () => {
+  const chooseMode = (nextMode: InvestigationMode) => {
+    if (nextMode === mode) return;
+    setMode(nextMode);
+    setActiveId(null);
+    setInvestigation(null);
+    setLiveEvents([]);
+    setSelectedTab("evidence");
+    try {
+      localStorage.removeItem("rootcause-investigation");
+    } catch {
+      /* Optional persistence. */
+    }
+  };
+  const openLiveIntake = () => {
+    chooseMode("live");
     setIntakeMode(projects.length ? "existing" : "directory");
     setProjectId(projects[0]?.id || "");
     setFormError("");
     setDialogOpen(true);
   };
+  const openIntake = () => {
+    if (mode === "demo") {
+      setScenarioDialogOpen(true);
+      void refreshScenarios();
+      return;
+    }
+    openLiveIntake();
+  };
 
   const loadDemo = async () => {
-    setBusy("demo");
+    setScenarioDialogOpen(true);
+    await refreshScenarios();
+  };
+
+  const startDemo = async (scenario: DemoScenario) => {
+    setBusy(`demo:${scenario.id}`);
     try {
-      const project = await api<Project>("/demo", { method: "POST" });
+      const project = await api<Project>("/demo", {
+        method: "POST",
+        body: JSON.stringify({ scenario_id: scenario.id }),
+      });
+      const result = await api<Investigation>("/investigations", {
+        method: "POST",
+        body: JSON.stringify({
+          project_id: project.id,
+          logs: "",
+          mode: "demo",
+        }),
+      });
+      setScenarioDialogOpen(false);
+      selectInvestigation(result.id, "demo");
       await refreshCollections();
-      setProjectId(project.id);
-      setIntakeMode("existing");
-      setLogs("");
-      setFormError("");
-      setDialogOpen(true);
       notify(
-        "Sample project imported. Start an investigation to collect real evidence.",
+        "Demo investigation started. Analysis is preconfigured; evidence and test execution are real.",
+        "success",
+      );
+    } catch (error) {
+      notify((error as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const resetDemo = async () => {
+    if (!activeId || investigation?.mode !== "demo") return;
+    setBusy("reset");
+    try {
+      const result = await api<Investigation>(
+        `/investigations/${encodeURIComponent(activeId)}/reset`,
+        { method: "POST", body: "{}" },
+      );
+      selectInvestigation(result.id, "demo");
+      await refreshCollections();
+      notify(
+        "Fresh demo investigation created. The previous investigation remains in history.",
         "success",
       );
     } catch (error) {
@@ -387,12 +471,16 @@ export default function App() {
         throw new Error("Select a project to investigate.");
       const result = await api<Investigation>("/investigations", {
         method: "POST",
-        body: JSON.stringify({ project_id: selectedProjectId, logs }),
+        body: JSON.stringify({
+          project_id: selectedProjectId,
+          logs,
+          mode: "live",
+        }),
       });
       setDialogOpen(false);
       setLogs("");
       setArchive(null);
-      selectInvestigation(result.id);
+      selectInvestigation(result.id, "live");
       await refreshCollections();
       notify(
         "Investigation started. Follow the activity feed for observed results.",
@@ -445,7 +533,13 @@ export default function App() {
   );
   const aiAvailable = health?.ai.available;
   const sandboxAvailable = health?.sandbox.available;
-  const ready = aiAvailable && sandboxAvailable;
+  const demoRunnerAvailable =
+    health?.demo?.execution_available ?? (sandboxAvailable || health?.demo?.local_runner_enabled);
+  const ready =
+    mode === "demo"
+      ? health?.demo?.available && demoRunnerAvailable
+      : aiAvailable && sandboxAvailable;
+  const activeMode = investigation?.mode || mode;
   const tabs = [
     {
       id: "evidence",
@@ -486,9 +580,8 @@ export default function App() {
             <Asterisk size={28} strokeWidth={2.2} />
           </span>
           <span>
-            rootcause<span className="brand-ai">.ai</span>
+            RootCause <span className="brand-ai">AI</span>
           </span>
-          <span className="beta-label">BETA</span>
         </a>
         <button
           className="workspace-switch"
@@ -499,7 +592,7 @@ export default function App() {
           </span>
           <span>
             <strong>Local workspace</strong>
-            <small>Personal workspace</small>
+            <small>Engineering console</small>
           </span>
           <ChevronDown size={15} />
         </button>
@@ -579,15 +672,15 @@ export default function App() {
           <div className="sample-card">
             <div className="sample-icon">
               <Beaker size={18} />
-              <span>MEET YOUR DEBUGGING AGENT</span>
+              <span>DEMONSTRATION</span>
             </div>
-            <h3>Start with a real failure.</h3>
-            <p>Explore a Python project with reproducible bugs.</p>
+            <h3>Reproducible scenarios</h3>
+            <p>Preconfigured analysis with real evidence and test execution.</p>
             <button onClick={() => void loadDemo()} disabled={busy !== null}>
               {busy === "demo" ? (
                 <LoaderCircle size={14} className="spin" />
               ) : (
-                "Explore sample project"
+                "Open demo scenarios"
               )}
               <ArrowUpRight size={14} />
             </button>
@@ -643,23 +736,22 @@ export default function App() {
             <div>
               <div className="eyebrow">
                 <span className="eyebrow-dash" />
-                EVIDENCE IN. ANSWERS OUT.
+                ENGINEERING OPERATIONS
               </div>
               <h1>
                 {view === "workspace"
-                  ? "Investigation workspace"
+                  ? "Investigation console"
                   : view === "projects"
                     ? "Your projects"
                     : view === "history"
                       ? "Investigation history"
                       : "Runtime & models"}
-                <span className="heading-dot">.</span>
               </h1>
               <p>
                 {view === "workspace"
-                  ? "Connect the clues. Find the cause. Verify the fix."
+                  ? "Investigate failures, review proposed changes, and verify outcomes."
                   : view === "projects"
-                    ? "Bring your Python code. Keep every investigation in an isolated copy."
+                    ? "Manage imported Python projects and their investigation workspaces."
                     : view === "history"
                       ? "A persistent record of the evidence, decisions, and outcomes."
                       : "See what is connected and what your local environment needs."}
@@ -693,6 +785,103 @@ export default function App() {
           )}
           {view === "workspace" && (
             <>
+              <div className="mode-toolbar">
+                <div>
+                  <strong>Investigation mode</strong>
+                  <p>
+                    {mode === "demo"
+                      ? "Bundled scenarios. Preconfigured analysis. Real verification."
+                      : "Your project. Live model analysis. Explicit patch approval."}
+                  </p>
+                </div>
+                <div
+                  className="mode-selector"
+                  role="group"
+                  aria-label="Investigation mode"
+                >
+                  <button
+                    aria-pressed={mode === "demo"}
+                    className={mode === "demo" ? "selected" : ""}
+                    onClick={() => chooseMode("demo")}
+                  >
+                    <Beaker size={16} />
+                    Demo Mode
+                  </button>
+                  <button
+                    aria-pressed={mode === "live"}
+                    className={mode === "live" ? "selected" : ""}
+                    onClick={() => chooseMode("live")}
+                  >
+                    <Sparkles size={16} />
+                    Live AI
+                  </button>
+                </div>
+              </div>
+              {activeMode === "demo" && (
+                <div className="demo-disclosure">
+                  <Info size={19} />
+                  <div>
+                    <strong>
+                      Demo Investigation — Preconfigured AI Analysis
+                    </strong>
+                    <p>
+                      Analysis and proposed repairs are predefined for the
+                      selected scenario. Source evidence, baseline tests, patch
+                      application, and verification use actual execution
+                      results.
+                    </p>
+                  </div>
+                  {investigation?.mode === "demo" && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={
+                        busy !== null || isRunning(investigation.status)
+                      }
+                      onClick={() => void resetDemo()}
+                    >
+                      {busy === "reset" ? (
+                        <LoaderCircle className="spin" size={14} />
+                      ) : (
+                        <RefreshCw size={14} />
+                      )}
+                      Reset Demo
+                    </Button>
+                  )}
+                </div>
+              )}
+              {!investigation && !activeLoading && mode === "demo" && (
+                <ScenarioPicker
+                  scenarios={scenarios}
+                  error={scenarioError}
+                  busy={busy}
+                  onStart={(scenario) => void startDemo(scenario)}
+                  onRetry={() => void refreshScenarios()}
+                />
+              )}
+              {investigation?.mode === "live" &&
+                terminalStatuses.includes(investigation.status) &&
+                investigation.status !== "verified" && (
+                  <div className="live-recovery">
+                    <TriangleAlert size={19} />
+                    <div>
+                      <strong>Live investigation requires attention</strong>
+                      <p>
+                        {investigation.error ||
+                          "Review the recorded outcome. A demo starts separately with a bundled scenario; this live investigation remains in history."}
+                      </p>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void loadDemo()}
+                      disabled={busy !== null}
+                    >
+                      Restart in Demo Mode
+                      <ArrowRight size={14} />
+                    </Button>
+                  </div>
+                )}
               <div className="runtime-strip">
                 <div>
                   <span
@@ -705,15 +894,23 @@ export default function App() {
                     {loading
                       ? "Connecting to your local environment"
                       : ready
-                        ? "Your investigation environment is ready"
+                        ? mode === "demo"
+                          ? "Demo execution is available"
+                          : "Live investigation environment is ready"
                         : health
-                          ? "Some runtime dependencies need attention"
+                          ? mode === "demo"
+                            ? "Demo test execution needs an available runner"
+                            : "Live AI or Docker requires attention"
                           : "Waiting for the API connection"}
                   </strong>
                   <span className="runtime-strip-description">
-                    {ready
-                      ? "Runs locally. Changes stay in your sandbox."
-                      : "Evidence collection remains available when connected."}
+                    {mode === "demo"
+                      ? sandboxAvailable
+                        ? "Docker runner available."
+                        : health?.demo?.local_runner_enabled
+                          ? "Trusted local demo runner enabled."
+                          : "No runner is available."
+                      : "Live mode never substitutes preconfigured analysis."}
                   </span>
                 </div>
                 <button onClick={() => navigate("runtime")}>
@@ -721,6 +918,12 @@ export default function App() {
                   <ArrowUpRight size={13} />
                 </button>
               </div>
+              {investigation && (
+                <WorkflowStages
+                  investigation={investigation}
+                  onSelect={setSelectedTab}
+                />
+              )}
               <section
                 className="metrics-grid"
                 aria-label="Investigation overview"
@@ -777,6 +980,32 @@ export default function App() {
                   textValue
                 />
               </section>
+              {investigation && (
+                <section className="finding-summary">
+                  <div>
+                    <span className="observed-label">
+                      {investigation.mode === "demo"
+                        ? "PRECONFIGURED SCENARIO ANALYSIS"
+                        : "INVESTIGATION FINDINGS"}
+                    </span>
+                    <h2>
+                      {investigation.hypotheses[0]?.title ||
+                        "Investigation in progress"}
+                    </h2>
+                    <p>
+                      {investigation.summary ||
+                        "The investigation will record its findings as evidence becomes available."}
+                    </p>
+                  </div>
+                  {investigation.status === "awaiting_approval" && (
+                    <Button onClick={() => setSelectedTab("patch")}>
+                      <GitCompareArrows size={16} />
+                      Review proposed patch
+                      <ArrowRight size={15} />
+                    </Button>
+                  )}
+                </section>
+              )}
               <div className="workspace-grid">
                 <section className="investigation-panel">
                   <div className="panel-heading">
@@ -792,7 +1021,9 @@ export default function App() {
                       {investigation ? (
                         <StatusBadge status={investigation.status} />
                       ) : (
-                        <span className="quiet-badge">Ready when you are</span>
+                        <span className="quiet-badge">
+                          No active investigation
+                        </span>
                       )}
                     </div>
                     <button
@@ -822,7 +1053,7 @@ export default function App() {
                       </span>
                       <span>
                         <ShieldCheck size={13} />
-                        Isolated workspace
+                        {runnerName(investigation.runner_type)}
                       </span>
                     </div>
                   )}
@@ -883,11 +1114,14 @@ export default function App() {
                                 <div className="section-intro">
                                   <span className="purple-label">
                                     <Sparkles size={13} />
-                                    AI REASONING
+                                    {investigation.mode === "demo"
+                                      ? "PRECONFIGURED DEMO ANALYSIS"
+                                      : "LIVE AI REASONING"}
                                   </span>
                                   <p>
-                                    Possible causes ranked against the collected
-                                    evidence. Confidence is a model estimate.
+                                    {investigation.mode === "demo"
+                                      ? "Scenario hypotheses are predefined and linked to actual collected evidence. Confidence is preconfigured, not a live model estimate."
+                                      : "Possible causes ranked against the collected evidence. Confidence is a model estimate."}
                                   </p>
                                 </div>
                                 {investigation.hypotheses.map((item, index) => (
@@ -900,13 +1134,30 @@ export default function App() {
                                 ))}
                                 {investigation.diagnostics.length > 0 && (
                                   <div className="diagnostic-observations">
-                                    <span className="observed-label"><Beaker size={13} />OBSERVED DIAGNOSTIC RESULTS</span>
-                                    {investigation.diagnostics.map((item, index) => (
-                                      <details key={`${item.tool}-${item.path}-${index}`}>
-                                        <summary><Terminal size={13} /><strong>{formatStatus(item.tool)}</strong><code>{item.path}</code><StatusBadge status={item.status} /><ChevronDown size={13} /></summary>
-                                        <pre className="code-block">{item.observation}</pre>
-                                      </details>
-                                    ))}
+                                    <span className="observed-label">
+                                      <Beaker size={13} />
+                                      OBSERVED DIAGNOSTIC RESULTS
+                                    </span>
+                                    {investigation.diagnostics.map(
+                                      (item, index) => (
+                                        <details
+                                          key={`${item.tool}-${item.path}-${index}`}
+                                        >
+                                          <summary>
+                                            <Terminal size={13} />
+                                            <strong>
+                                              {formatStatus(item.tool)}
+                                            </strong>
+                                            <code>{item.path}</code>
+                                            <StatusBadge status={item.status} />
+                                            <ChevronDown size={13} />
+                                          </summary>
+                                          <pre className="code-block">
+                                            {item.observation}
+                                          </pre>
+                                        </details>
+                                      ),
+                                    )}
                                   </div>
                                 )}
                               </div>
@@ -935,6 +1186,22 @@ export default function App() {
                             )}
                           </Tabs.Content>
                           <Tabs.Content value="tests">
+                            {investigation && (
+                              <div className="runner-note">
+                                <Terminal size={15} />
+                                <strong>
+                                  {runnerName(investigation.runner_type)}
+                                </strong>
+                                <span>
+                                  {investigation.runner_type ===
+                                  "trusted_local_demo"
+                                    ? "Restricted to exact bundled fixtures. This runner is not a Docker sandbox."
+                                    : investigation.runner_type === "docker"
+                                      ? "Restricted container execution."
+                                      : "No test runner is available for this investigation."}
+                                </span>
+                              </div>
+                            )}
                             <TestComparison
                               baseline={investigation?.baseline || null}
                               verification={investigation?.verification || null}
@@ -958,8 +1225,9 @@ export default function App() {
                   <div className="panel-footnote">
                     <ShieldCheck size={13} />
                     <span>
-                      Source code is analyzed locally. Patches require your
-                      approval.
+                      {activeMode === "demo"
+                        ? "Preconfigured analysis. Real execution. Explicit patch approval."
+                        : "Live analysis. Recorded evidence. Explicit patch approval."}
                     </span>
                     <span className="footnote-decor">✳</span>
                   </div>
@@ -973,7 +1241,7 @@ export default function App() {
               <div className="bottom-info">
                 <span>
                   <Box size={14} />
-                  Isolated by design
+                  Recorded execution environment
                 </span>
                 <span>
                   <CheckCheck size={14} />
@@ -983,7 +1251,6 @@ export default function App() {
                   <GitCompareArrows size={14} />
                   You approve every change
                 </span>
-                <span className="bottom-info-end">Built for the why.</span>
               </div>
             </>
           )}
@@ -995,19 +1262,25 @@ export default function App() {
                   {projects.length} imported{" "}
                   {projects.length === 1 ? "project" : "projects"}
                 </span>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => void loadDemo()}
-                  disabled={busy !== null}
-                >
-                  {busy === "demo" ? (
-                    <LoaderCircle size={14} className="spin" />
-                  ) : (
-                    <Beaker size={14} />
-                  )}
-                  Import sample project
-                </Button>
+                <div className="toolbar-actions">
+                  <Button size="sm" onClick={openLiveIntake}>
+                    <Plus size={15} />
+                    Import project
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => void loadDemo()}
+                    disabled={busy !== null}
+                  >
+                    {busy === "demo" ? (
+                      <LoaderCircle size={14} className="spin" />
+                    ) : (
+                      <Beaker size={14} />
+                    )}
+                    Demo scenarios
+                  </Button>
+                </div>
               </div>
               {loading ? (
                 <Loading label="Loading projects" />
@@ -1033,6 +1306,7 @@ export default function App() {
                           variant="secondary"
                           size="sm"
                           onClick={() => {
+                            chooseMode("live");
                             setProjectId(project.id);
                             setIntakeMode("existing");
                             setFormError("");
@@ -1053,7 +1327,7 @@ export default function App() {
                     title="Your next answer starts here"
                     description="Import a local Python directory or ZIP archive, or explore the bundled sample with reproducible failures."
                   >
-                    <Button onClick={openIntake}>
+                    <Button onClick={openLiveIntake}>
                       <Plus size={16} />
                       Import a project
                     </Button>
@@ -1063,15 +1337,16 @@ export default function App() {
                       disabled={busy !== null}
                     >
                       <Beaker size={16} />
-                      Try sample project
+                      Demo scenarios
                     </Button>
                   </EmptyState>
                 </div>
               )}
               <div className="info-note">
                 <Info size={16} />
-                Projects are copied into managed workspaces. Tests run only
-                inside restricted Docker containers.
+                Projects are copied into managed workspaces. Imported projects
+                use Docker; bundled demo fixtures may use the explicitly enabled
+                trusted local demo runner.
               </div>
             </section>
           )}
@@ -1129,7 +1404,10 @@ export default function App() {
                           </span>
                           <span>
                             <strong>{item.project_name}</strong>
-                            <small>{item.id.slice(0, 12)}</small>
+                            <small>
+                              {item.mode === "demo" ? "DEMO" : "LIVE AI"} ·{" "}
+                              {item.id.slice(0, 12)}
+                            </small>
                           </span>
                         </div>
                         <StatusBadge status={item.status} />
@@ -1183,9 +1461,9 @@ export default function App() {
         <footer className="page-footer">
           <span className="footer-brand">
             <Asterisk size={14} />
-            rootcause.ai
+            RootCause AI
           </span>
-          <span>Less guesswork. More understanding.</span>
+          <span>Evidence-driven software investigation</span>
           <span className="footer-local">
             <span className="tiny-dot green-dot" />
             LOCAL WORKSPACE
@@ -1194,12 +1472,36 @@ export default function App() {
       </div>
 
       <Dialog
+        open={scenarioDialogOpen}
+        onOpenChange={(open) => {
+          if (!busy?.startsWith("demo:")) setScenarioDialogOpen(open);
+        }}
+        title="Select a demo scenario"
+        description="Each scenario creates a fresh project and investigation. Analysis is preconfigured; test results are produced by real execution."
+      >
+        <div className="scenario-dialog-body">
+          <div className="demo-disclosure">
+            <Info size={18} />
+            <strong>Demo Investigation — Preconfigured AI Analysis</strong>
+          </div>
+          <ScenarioPicker
+            scenarios={scenarios}
+            error={scenarioError}
+            busy={busy}
+            onStart={(scenario) => void startDemo(scenario)}
+            onRetry={() => void refreshScenarios()}
+            compact
+          />
+        </div>
+      </Dialog>
+
+      <Dialog
         open={dialogOpen}
         onOpenChange={(open) => {
           if (busy !== "start") setDialogOpen(open);
         }}
-        title="Let's get to the root cause."
-        description="Choose a Python project and add the clues you already have."
+        title="Start a live investigation"
+        description="Import a Python project and provide logs for live AI analysis. Live mode requires a configured model and Docker."
       >
         <form onSubmit={(event) => void startInvestigation(event)}>
           <Tabs.Root value={intakeMode} onValueChange={setIntakeMode}>
@@ -1415,43 +1717,20 @@ function Welcome({
 }) {
   return (
     <div className="welcome-state">
-      <div className="investigation-graphic" aria-hidden="true">
-        <div className="graphic-ring ring-one" />
-        <div className="graphic-ring ring-two" />
-        <div className="graphic-ring ring-three" />
-        <span className="graphic-node node-code">
-          <Braces size={18} />
-        </span>
-        <span className="graphic-node node-log">
-          <Terminal size={17} />
-        </span>
-        <span className="graphic-node node-test">
-          <FlaskConical size={17} />
-        </span>
-        <span className="graphic-center">
-          <Asterisk size={38} strokeWidth={1.3} />
-        </span>
-        <span className="graphic-spark spark-one" />
-        <span className="graphic-spark spark-two" />
-        <span className="graphic-label label-source">source.py</span>
-        <span className="graphic-label label-trace">traceback.log</span>
+      <div className="empty-icon">
+        <FileSearch size={28} />
       </div>
-      <span className="welcome-eyebrow">
-        A LITTLE CONTEXT. A LOT MORE CLARITY.
-      </span>
-      <h2>
-        Every failure has a story.
-        <br />
-        <span>Let's find yours.</span>
-      </h2>
+      <span className="welcome-eyebrow">INVESTIGATION WORKFLOW</span>
+      <h2>No active investigation</h2>
       <p>
-        Turn scattered logs, source code, and failing tests
-        <br className="desktop-break" /> into an evidence-backed path to a fix.
+        Select a demo scenario or import a project for live analysis.
+        <br className="desktop-break" /> Evidence, proposed repairs, and
+        verification results will appear here.
       </p>
       <div className="welcome-actions">
         <Button onClick={onStart}>
           <Plus size={16} />
-          Start investigation
+          Create investigation
           <ArrowRight size={16} />
         </Button>
         <button className="text-button" onClick={onDemo} disabled={busy}>
@@ -1460,7 +1739,7 @@ function Welcome({
           ) : (
             <Beaker size={16} />
           )}
-          Try a sample project
+          Demo scenarios
         </button>
       </div>
       <div className="welcome-steps">
@@ -1469,14 +1748,187 @@ function Welcome({
         </span>
         <ChevronRight size={12} />
         <span>
-          <span>02</span>Find the cause
+          <span>02</span>Review analysis
         </span>
         <ChevronRight size={12} />
         <span>
-          <span>03</span>Verify the fix
+          <span>03</span>Approve & verify
         </span>
       </div>
     </div>
+  );
+}
+
+function ScenarioPicker({
+  scenarios,
+  error,
+  busy,
+  onStart,
+  onRetry,
+  compact = false,
+}: {
+  scenarios: DemoScenario[];
+  error: string;
+  busy: string | null;
+  onStart: (scenario: DemoScenario) => void;
+  onRetry: () => void;
+  compact?: boolean;
+}) {
+  return (
+    <section
+      className={cn("scenario-section", compact && "scenario-compact")}
+      aria-label="Demo scenarios"
+    >
+      {!compact && (
+        <div className="scenario-section-heading">
+          <div>
+            <span className="eyebrow">REPRODUCIBLE DEMONSTRATIONS</span>
+            <h2>Select a failure scenario</h2>
+            <p>
+              No Ollama connection is required for preconfigured demo analysis.
+            </p>
+          </div>
+          <span className="scenario-count">{scenarios.length} scenarios</span>
+        </div>
+      )}
+      {error ? (
+        <div className="inline-error">
+          <TriangleAlert size={17} />
+          <span>{error}</span>
+          <Button variant="secondary" size="sm" onClick={onRetry}>
+            <RefreshCw size={14} />
+            Retry
+          </Button>
+        </div>
+      ) : !scenarios.length ? (
+        <div className="scenario-loading">
+          <LoaderCircle className="spin" size={18} />
+          Loading demo scenarios…
+        </div>
+      ) : (
+        <div className="scenario-grid">
+          {scenarios.map((scenario, index) => (
+            <article className="scenario-card" key={scenario.id}>
+              <div className="scenario-card-top">
+                <span className="scenario-icon">
+                  {index === 0 ? (
+                    <Network size={21} />
+                  ) : index === 1 ? (
+                    <Layers3 size={21} />
+                  ) : (
+                    <CodeIcon />
+                  )}
+                </span>
+                <span className="scenario-category">{scenario.category}</span>
+              </div>
+              <h3>{scenario.title}</h3>
+              <p>{scenario.description}</p>
+              <div className="scenario-failure">
+                <span>EXPECTED FAILURE</span>
+                <code>{scenario.expected_failure}</code>
+              </div>
+              <Button
+                onClick={() => onStart(scenario)}
+                disabled={busy !== null}
+              >
+                {busy === `demo:${scenario.id}` ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : (
+                  <Play size={14} fill="currentColor" />
+                )}
+                {busy === `demo:${scenario.id}` ? "Starting…" : "Start demo"}
+                <ArrowRight size={14} />
+              </Button>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CodeIcon() {
+  return <FileCode2 size={21} />;
+}
+
+function WorkflowStages({
+  investigation,
+  onSelect,
+}: {
+  investigation: Investigation;
+  onSelect: (tab: string) => void;
+}) {
+  const stages = [
+    {
+      label: "Evidence",
+      tab: "evidence",
+      icon: FileSearch,
+      complete: investigation.evidence.length > 0,
+      active: ["queued", "collecting", "baseline"].includes(
+        investigation.status,
+      ),
+    },
+    {
+      label: "Analysis",
+      tab: "hypotheses",
+      icon: Network,
+      complete: investigation.hypotheses.length > 0,
+      active: ["analyzing", "diagnosing", "proposing"].includes(
+        investigation.status,
+      ),
+    },
+    {
+      label: "Patch review",
+      tab: "patch",
+      icon: GitCompareArrows,
+      complete:
+        !!investigation.patch &&
+        ["approved", "applied"].includes(investigation.patch.status),
+      active: investigation.status === "awaiting_approval",
+    },
+    {
+      label: "Verification",
+      tab: "tests",
+      icon: FlaskConical,
+      complete:
+        investigation.status === "verified" &&
+        investigation.verification?.verified === true,
+      active: ["applying", "verifying"].includes(investigation.status),
+    },
+  ];
+  return (
+    <nav className="workflow-stages" aria-label="Investigation stages">
+      {stages.map((stage, index) => (
+        <button
+          key={stage.tab}
+          className={cn(
+            "workflow-stage",
+            stage.complete && "complete",
+            stage.active && "current",
+          )}
+          onClick={() => onSelect(stage.tab)}
+          aria-current={stage.active ? "step" : undefined}
+        >
+          <span className="stage-number">
+            {stage.complete ? <Check size={14} /> : index + 1}
+          </span>
+          <span>
+            <strong>{stage.label}</strong>
+            <small>
+              {stage.complete
+                ? "Recorded"
+                : stage.active
+                  ? "Current stage"
+                  : "Pending"}
+            </small>
+          </span>
+          <stage.icon size={17} />
+          {index < stages.length - 1 && (
+            <ChevronRight className="stage-chevron" size={15} />
+          )}
+        </button>
+      ))}
+    </nav>
   );
 }
 
@@ -1669,7 +2121,9 @@ function PatchReview({
           </p>
         </div>
       </div>
-      {patch.explanation && <p className="patch-explanation">{patch.explanation}</p>}
+      {patch.explanation && (
+        <p className="patch-explanation">{patch.explanation}</p>
+      )}
       <div className="diff-container">
         <div className="diff-toolbar">
           <span>
@@ -1731,7 +2185,7 @@ function PatchReview({
             ) : (
               <X size={14} />
             )}
-            Reject
+            Reject patch
           </Button>
           <Button size="sm" disabled={busy !== null} onClick={onApprove}>
             {busy === "approve" ? (
@@ -1739,7 +2193,7 @@ function PatchReview({
             ) : (
               <Check size={15} />
             )}
-            Approve & verify
+            Approve patch & run tests
           </Button>
         </div>
       )}
@@ -1762,8 +2216,8 @@ function TestComparison({
           ACTUAL EXECUTION RESULTS
         </span>
         <p>
-          Tests execute in restricted Docker containers. A fix is verified only
-          when the recorded test results support it.
+          The recorded runner executes the real test suite. Verification
+          requires passing tests, preserved test coverage, and no regressions.
         </p>
       </div>
       <div className="test-comparison-grid">
@@ -1778,6 +2232,57 @@ function TestComparison({
           result={verification}
         />
       </div>
+      {verification && (
+        <section
+          className={cn(
+            "verification-integrity",
+            verification.verified ? "verified" : "unverified",
+          )}
+        >
+          <div>
+            {verification.verified ? (
+              <CheckCircle2 size={20} />
+            ) : (
+              <TriangleAlert size={20} />
+            )}
+            <strong>
+              {verification.verified
+                ? "Fix verified by executed tests"
+                : "Fix has not been verified"}
+            </strong>
+          </div>
+          <dl>
+            <div>
+              <dt>Fixed tests</dt>
+              <dd>{verification.fixed_tests?.length ?? "Not reported"}</dd>
+            </div>
+            <div>
+              <dt>Regressions</dt>
+              <dd>{verification.regressions?.length ?? "Not reported"}</dd>
+            </div>
+            <div>
+              <dt>Missing tests</dt>
+              <dd>{verification.missing_tests?.length ?? "Not reported"}</dd>
+            </div>
+            <div>
+              <dt>Test coverage preserved</dt>
+              <dd>
+                {verification.coverage_equal === true
+                  ? "Yes"
+                  : verification.coverage_equal === false
+                    ? "No"
+                    : "Not reported"}
+              </dd>
+            </div>
+          </dl>
+          {!!verification.regressions?.length && (
+            <pre>{verification.regressions.join("\n")}</pre>
+          )}
+          {!!verification.missing_tests?.length && (
+            <pre>{verification.missing_tests.join("\n")}</pre>
+          )}
+        </section>
+      )}
       {[baseline, verification].some(Boolean) ? (
         <div className="test-outputs">
           {baseline && <TestOutput title="Baseline output" result={baseline} />}
@@ -1841,6 +2346,12 @@ function TestSummary({
         </span>
         {result && <span>exit {result.exit_code ?? "—"}</span>}
       </div>
+      {result?.runner && (
+        <span className="test-runner">
+          <Terminal size={12} />
+          {runnerName(result.runner)}
+        </span>
+      )}
     </article>
   );
 }
@@ -1887,14 +2398,14 @@ function TestOutput({ title, result }: { title: string; result: TestResult }) {
 function ReportPanel({ investigation }: { investigation: Investigation }) {
   const verified =
     ["verified", "completed"].includes(investigation.status) &&
-    investigation.verification?.status === "passed";
+    investigation.verification?.verified === true;
   return (
     <div className="report-view">
       <div className="report-icon">
         <FileText size={28} strokeWidth={1.4} />
       </div>
       <span className="observed-label">INVESTIGATION RECORD</span>
-      <h3>From the first clue to the final test.</h3>
+      <h3>Investigation report</h3>
       <p>
         {investigation.summary ||
           "This report captures the current investigation, including observed evidence, ranked hypotheses, patch decisions, and recorded test outcomes."}
@@ -1907,6 +2418,18 @@ function ReportPanel({ investigation }: { investigation: Investigation }) {
         <div>
           <span>Investigation status</span>
           <StatusBadge status={investigation.status} />
+        </div>
+        <div>
+          <span>Analysis mode</span>
+          <strong>
+            {investigation.mode === "demo"
+              ? "Preconfigured demo analysis"
+              : "Live AI analysis"}
+          </strong>
+        </div>
+        <div>
+          <span>Test runner</span>
+          <strong>{runnerName(investigation.runner_type)}</strong>
         </div>
         <div>
           <span>Evidence artifacts</span>
@@ -2183,6 +2706,49 @@ function RuntimeView({
                 </div>
               )}
             </article>
+            <article className="runtime-card demo-runtime-card">
+              <div className="runtime-card-heading">
+                <span className="runtime-service-icon icon-blue">
+                  <Beaker size={24} />
+                </span>
+                <span
+                  className={cn(
+                    "status-badge",
+                    health?.demo?.execution_available ? "tone-green" : "tone-amber",
+                  )}
+                >
+                  <span className="status-dot" />
+                  {health?.demo?.execution_available ? "Execution available" : health?.demo?.available ? "Execution unavailable" : "Not reported"}
+                </span>
+              </div>
+              <h2>Demo execution</h2>
+              <p>
+                Preconfigured analysis for bundled scenarios, with actual test
+                execution and transparent runner identification.
+              </p>
+              <dl>
+                <div>
+                  <dt>Scenarios</dt>
+                  <dd>{health?.demo?.scenarios ?? "Not reported"}</dd>
+                </div>
+                <div>
+                  <dt>Trusted local demo runner</dt>
+                  <dd>
+                    {health?.demo?.local_runner_enabled
+                      ? "Explicitly enabled"
+                      : "Disabled"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Scope</dt>
+                  <dd>
+                    Exact bundled fixtures only. Imported projects always
+                    require Docker.
+                  </dd>
+                </div>
+              </dl>
+              {health?.demo?.local_runner?.isolation_note && <div className="info-note"><Info size={16} /><span>{health.demo.local_runner.isolation_note}</span></div>}
+            </article>
           </div>
           {error && (
             <div className="inline-error">
@@ -2195,13 +2761,14 @@ function RuntimeView({
               <ShieldCheck size={24} />
             </span>
             <div>
-              <h3>Local by default. Explicit by design.</h3>
+              <h3>Execution policy</h3>
               <p>
-                RootCause AI never runs imported project code directly on the
-                host. Model output is treated as untrusted, diagnostic commands
-                are restricted, and source patches need your approval. Missing
-                services are reported as blockers; they never produce simulated
-                results.
+                Imported projects run only inside restricted Docker containers.
+                The optional trusted local demo runner executes only exact,
+                known bundled fixtures and is identified in every result. Demo
+                analysis is preconfigured and explicitly labeled. Live AI
+                failures never silently switch modes. Every patch requires
+                developer approval.
               </p>
             </div>
           </div>

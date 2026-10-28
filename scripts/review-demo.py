@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import argparse
 import time
 import urllib.error
 import urllib.request
@@ -32,13 +33,20 @@ def wait(identity: str) -> dict:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Review a real RootCause investigation and explicitly approve its diff")
+    parser.add_argument("--mode", choices=["demo", "live"], default="demo")
+    parser.add_argument("--scenario", choices=["api-config", "database-query", "logical-total"], default="api-config")
+    args = parser.parse_args()
     health = call("/health")
-    if health["status"] != "ready":
+    ready = health.get("demo", {}).get("execution_available", False) if args.mode == "demo" else health["status"] == "ready"
+    if not ready:
         print(json.dumps(health, indent=2))
-        print("Configure Docker and a local Ollama model before running the full demo.")
+        print("Enable the trusted bundled-demo runner or configure Docker before running Demo Mode." if args.mode == "demo" else "Configure Docker and a local Ollama model before running Live AI Mode.")
         return 2
-    project = call("/demo", {})
-    item = call("/investigations", {"project_id": project["id"], "logs": ""})
+    project = call("/demo", {"scenario_id": args.scenario})
+    item = call("/investigations", {"project_id": project["id"], "logs": "", "mode": args.mode})
+    if args.mode == "demo":
+        print("Demo Investigation — Preconfigured AI Analysis. Test outcomes below come from real execution.")
     identity = item["id"]
     print(f"Investigation: {identity}")
     item = wait(identity)

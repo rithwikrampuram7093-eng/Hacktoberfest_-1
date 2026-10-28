@@ -15,6 +15,11 @@ class DirectoryRequest(StrictModel):
 class InvestigationRequest(StrictModel):
     project_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     logs: str = Field(default="", max_length=100_000)
+    mode: Literal["live", "demo"] = "live"
+
+
+class DemoRequest(StrictModel):
+    scenario_id: Literal["api-config", "database-query", "logical-total"] = "api-config"
 
 
 class DiagnosticCheck(StrictModel):

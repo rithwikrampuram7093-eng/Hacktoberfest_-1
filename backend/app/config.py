@@ -20,6 +20,7 @@ class Settings:
     docker_image: str = field(default_factory=lambda: os.getenv("RC_DOCKER_IMAGE", "rootcause-runner:local"))
     test_timeout: int = field(default_factory=lambda: int(os.getenv("RC_TEST_TIMEOUT", "120")))
     ai_timeout: int = field(default_factory=lambda: int(os.getenv("RC_AI_TIMEOUT", "180")))
+    enable_trusted_demo_runner: bool = field(default_factory=lambda: os.getenv("RC_ENABLE_TRUSTED_DEMO_RUNNER", "false").strip().lower() in {"1", "true", "yes"})
 
     def __post_init__(self) -> None:
         parsed = urlparse(self.ollama_url)
