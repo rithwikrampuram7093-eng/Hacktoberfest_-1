@@ -1,0 +1,5 @@
+{
+  "inventory_api_base_url": "https://inventory.example.test/v1",
+  "tax_rate": "0.10",
+  "currency": "USD"
+}
